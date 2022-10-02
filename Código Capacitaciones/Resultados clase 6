@@ -1,0 +1,109 @@
+#!/usr/bin/env python
+
+import rospy
+from std_msgs.msg import String, Int32
+from geometry_msgs.msg import Twist 
+from sensor_msgs.msg import Image, Joy 
+import cv2 
+from cv_bridge import CvBridge 
+import numpy as np 
+import math
+from duckietown_msgs.msg import Twist2DStamped
+
+class Template(object):
+	def __init__(self, args):
+		super(Template, self).__init__()
+		self.args = args
+		
+		# Subscribers
+		rospy.Subscriber("/duckiebot/camera_node/image/raw", Image, self.callback_cam)
+		rospy.Subscriber("/duckiebot/joy", Joy, self.callback_control)
+		
+		# Publishers
+		self.pub_cam = rospy.Publisher("/duckiebot/camera_node/image/test", Image, queue_size=1)
+		self.pub_control = rospy.Publisher("/duckiebot/wheels_driver_node/car_cmd", Twist2DStamped)	
+	
+	def callback_cam(self, msg):
+		bridge = CvBridge()
+		image = bridge.imgmsg_to_cv2(msg, "bgr8")
+		
+		image_out = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+		
+		lower_limit = np.array([25, 130, 130])
+		upper_limit = np.array([35, 255, 255])
+
+		mask = cv2.inRange(image_out, lower_limit, upper_limit)
+
+		kernel = np.ones((3, 3), np.uint8)
+		img_out = cv2.erode(mask, kernel, iterations=1)
+		img_out = cv2.dilate(img_out, kernel, iterations=3)
+
+		img_masked = cv2.bitwise_and(image, image, mask=img_out)
+		
+		# Creando el contorno
+		_, contours, hierarchy = cv2.findContours(img_out, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+		
+		min_area = 5
+		
+		# Color del rectangulo que encierra al pato (negro por defecto)
+		rect_color = (0, 0, 0)
+
+		for val in contours:
+			x, y, w, h = cv2.boundingRect(val)
+			
+			# Dibujamos un rectangulo solo si el objeto detectado supera el area minima
+			if w*h > min_area:
+				cv2.rectangle(image, (x+w, y+h), (x,y), rect_color, 2)
+				
+				# d_r es la altura real del pato
+				d_r = 3.5
+				# f es la distancia focal de la camara (predefinida)
+				f = 101.8
+				# p es la altura del pato en la camara
+				p = h
+				
+				# Finalmente, D_r es la distancia estimada del pato a la camara
+				D_r = (d_r * f)/p
+				print(D_r)
+		
+		msg = bridge.cv2_to_imgmsg(image, "bgr8")
+		self.pub_cam.publish(msg)
+
+	def callback_control(self, msg):
+		axes = list(msg.axes)
+		buttons = list(msg.buttons)
+
+		B = buttons[1]
+		
+		# Freno de emergencia
+		if B == 1:
+			for i in range(len(axes)):
+				axes[i] = 0
+	
+		# Evitar drift del control
+		DRIFT_TOL = 0.1
+		for i in range(0, 4):
+			if abs(axes[i]) <= DRIFT_TOL:
+				axes[i] = 0
+
+		# Mapeamos los ejes para mayor velocidad ang./lineal
+		axes[1] *= 2
+		axes[3] *= math.pi
+
+		mensaje = Twist2DStamped()
+		mensaje.v = axes[0]
+		mensaje.omega = axes[3]
+
+		self.pub_control.publish(mensaje)
+
+def main():
+	rospy.init_node('test') #creacion y registro del nodo!
+	
+	# rosrun desafios_2022 template_cv.py 	
+	obj = Template('args')
+
+	rospy.spin()
+
+
+if __name__ =='__main__':
+	main()
